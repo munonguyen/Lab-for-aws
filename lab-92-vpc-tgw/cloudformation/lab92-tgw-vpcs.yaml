@@ -1,0 +1,959 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "AWS Study Group Lab 92 - VPC Components Deep Dive (5 VPCs, 30 Subnets, Route Tables, IGW, NAT GW, EC2 SSM Instances with lab92 naming standard)"
+
+Parameters:
+  AvailabilityZoneA:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Default: us-east-1a
+    Description: Primary Availability Zone
+
+  AvailabilityZoneB:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Default: us-east-1b
+    Description: Secondary Availability Zone
+
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+    Description: Latest Amazon Linux 2023 AMI via SSM parameter
+
+  InstanceType:
+    Type: String
+    Default: t3.micro
+    AllowedValues: [t3.nano, t3.micro, t3.small, t2.micro]
+    Description: Instance type for testing servers
+
+Resources:
+  #############################################################################
+  # IAM ROLE FOR SSM SESSION MANAGER ACCESS
+  #############################################################################
+  SSMInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-ssm-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: [ec2.amazonaws.com]
+            Action: ["sts:AssumeRole"]
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  SSMInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: "/"
+      Roles:
+        - !Ref SSMInstanceRole
+
+  #############################################################################
+  # 1. NON-PROD VPC 1 (lab92-np1) - 10.16.0.0/16 (Dev)
+  #############################################################################
+  NP1VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.16.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: lab92-np1
+
+  NP1SubnetPublicA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref NP1VPC
+      CidrBlock: 10.16.1.0/24
+      AvailabilityZone: !Ref AvailabilityZoneA
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: lab92-sub-public-np1-az-a
+
+  NP1SubnetPublicB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref NP1VPC
+      CidrBlock: 10.16.2.0/24
+      AvailabilityZone: !Ref AvailabilityZoneB
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: lab92-sub-public-np1-az-b
+
+  NP1SubnetPrivateA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref NP1VPC
+      CidrBlock: 10.16.10.0/24
+      AvailabilityZone: !Ref AvailabilityZoneA
+      Tags:
+        - Key: Name
+          Value: lab92-sub-private-np1-az-a
+
+  NP1SubnetPrivateB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref NP1VPC
+      CidrBlock: 10.16.20.0/24
+      AvailabilityZone: !Ref AvailabilityZoneB
+      Tags:
+        - Key: Name
+          Value: lab92-sub-private-np1-az-b
+
+  NP1SubnetAttachA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref NP1VPC
+      CidrBlock: 10.16.100.0/28
+      AvailabilityZone: !Ref AvailabilityZoneA
+      Tags:
+        - Key: Name
+          Value: lab92-sub-private-np1-attach-az-a
+
+  NP1SubnetAttachB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref NP1VPC
+      CidrBlock: 10.16.200.0/28
+      AvailabilityZone: !Ref AvailabilityZoneB
+      Tags:
+        - Key: Name
+          Value: lab92-sub-private-np1-attach-az-b
+
+  # NP1 Route Tables
+  NP1PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref NP1VPC
+      Tags:
+        - Key: Name
+          Value: lab92-rt-public-np1
+
+  NP1PublicSubnetAssocA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref NP1SubnetPublicA
+      RouteTableId: !Ref NP1PublicRouteTable
+
+  NP1PublicSubnetAssocB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref NP1SubnetPublicB
+      RouteTableId: !Ref NP1PublicRouteTable
+
+  NP1PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref NP1VPC
+      Tags:
+        - Key: Name
+          Value: lab92-rt-private-np1
+
+  NP1PrivateSubnetAssocA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref NP1SubnetPrivateA
+      RouteTableId: !Ref NP1PrivateRouteTable
+
+  NP1PrivateSubnetAssocB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref NP1SubnetPrivateB
+      RouteTableId: !Ref NP1PrivateRouteTable
+
+  NP1AttachRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref NP1VPC
+      Tags:
+        - Key: Name
+          Value: lab92-rt-attach-np1
+
+  NP1AttachSubnetAssocA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref NP1SubnetAttachA
+      RouteTableId: !Ref NP1AttachRouteTable
+
+  NP1AttachSubnetAssocB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref NP1SubnetAttachB
+      RouteTableId: !Ref NP1AttachRouteTable
+
+  NP1SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow all RFC1918 internal traffic
+      VpcId: !Ref NP1VPC
+      SecurityGroupIngress:
+        - IpProtocol: -1
+          CidrIp: 10.0.0.0/11
+      Tags:
+        - Key: Name
+          Value: lab92-sg-np1
+
+  NP1Server:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref LatestAmiId
+      SubnetId: !Ref NP1SubnetPrivateA
+      IamInstanceProfile: !Ref SSMInstanceProfile
+      SecurityGroupIds:
+        - !Ref NP1SecurityGroup
+      Tags:
+        - Key: Name
+          Value: lab92-ec2-dev
+
+  #############################################################################
+  # 2. NON-PROD VPC 2 (lab92-np2) - 10.17.0.0/16 (Test)
+  #############################################################################
+  NP2VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.17.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: lab92-np2
+
+  NP2SubnetPublicA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref NP2VPC
+      CidrBlock: 10.17.1.0/24
+      AvailabilityZone: !Ref AvailabilityZoneA
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: lab92-sub-public-np2-az-a
+
+  NP2SubnetPublicB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref NP2VPC
+      CidrBlock: 10.17.2.0/24
+      AvailabilityZone: !Ref AvailabilityZoneB
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: lab92-sub-public-np2-az-b
+
+  NP2SubnetPrivateA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref NP2VPC
+      CidrBlock: 10.17.10.0/24
+      AvailabilityZone: !Ref AvailabilityZoneA
+      Tags:
+        - Key: Name
+          Value: lab92-sub-private-np2-az-a
+
+  NP2SubnetPrivateB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref NP2VPC
+      CidrBlock: 10.17.20.0/24
+      AvailabilityZone: !Ref AvailabilityZoneB
+      Tags:
+        - Key: Name
+          Value: lab92-sub-private-np2-az-b
+
+  NP2SubnetAttachA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref NP2VPC
+      CidrBlock: 10.17.100.0/28
+      AvailabilityZone: !Ref AvailabilityZoneA
+      Tags:
+        - Key: Name
+          Value: lab92-sub-private-np2-attach-az-a
+
+  NP2SubnetAttachB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref NP2VPC
+      CidrBlock: 10.17.200.0/28
+      AvailabilityZone: !Ref AvailabilityZoneB
+      Tags:
+        - Key: Name
+          Value: lab92-sub-private-np2-attach-az-b
+
+  # NP2 Route Tables
+  NP2PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref NP2VPC
+      Tags:
+        - Key: Name
+          Value: lab92-rt-public-np2
+
+  NP2PublicSubnetAssocA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref NP2SubnetPublicA
+      RouteTableId: !Ref NP2PublicRouteTable
+
+  NP2PublicSubnetAssocB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref NP2SubnetPublicB
+      RouteTableId: !Ref NP2PublicRouteTable
+
+  NP2PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref NP2VPC
+      Tags:
+        - Key: Name
+          Value: lab92-rt-private-np2
+
+  NP2PrivateSubnetAssocA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref NP2SubnetPrivateA
+      RouteTableId: !Ref NP2PrivateRouteTable
+
+  NP2PrivateSubnetAssocB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref NP2SubnetPrivateB
+      RouteTableId: !Ref NP2PrivateRouteTable
+
+  NP2AttachRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref NP2VPC
+      Tags:
+        - Key: Name
+          Value: lab92-rt-attach-np2
+
+  NP2AttachSubnetAssocA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref NP2SubnetAttachA
+      RouteTableId: !Ref NP2AttachRouteTable
+
+  NP2AttachSubnetAssocB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref NP2SubnetAttachB
+      RouteTableId: !Ref NP2AttachRouteTable
+
+  NP2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow all RFC1918 internal traffic
+      VpcId: !Ref NP2VPC
+      SecurityGroupIngress:
+        - IpProtocol: -1
+          CidrIp: 10.0.0.0/11
+      Tags:
+        - Key: Name
+          Value: lab92-sg-np2
+
+  NP2Server:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref LatestAmiId
+      SubnetId: !Ref NP2SubnetPrivateA
+      IamInstanceProfile: !Ref SSMInstanceProfile
+      SecurityGroupIds:
+        - !Ref NP2SecurityGroup
+      Tags:
+        - Key: Name
+          Value: lab92-ec2-test
+
+  #############################################################################
+  # 3. PRODUCTION VPC 1 (lab92-p1) - 10.8.0.0/16
+  #############################################################################
+  P1VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.8.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: lab92-p1
+
+  P1SubnetPublicA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref P1VPC
+      CidrBlock: 10.8.1.0/24
+      AvailabilityZone: !Ref AvailabilityZoneA
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: lab92-sub-public-p1-az-a
+
+  P1SubnetPublicB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref P1VPC
+      CidrBlock: 10.8.2.0/24
+      AvailabilityZone: !Ref AvailabilityZoneB
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: lab92-sub-public-p1-az-b
+
+  P1SubnetPrivateA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref P1VPC
+      CidrBlock: 10.8.10.0/24
+      AvailabilityZone: !Ref AvailabilityZoneA
+      Tags:
+        - Key: Name
+          Value: lab92-sub-private-p1-az-a
+
+  P1SubnetPrivateB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref P1VPC
+      CidrBlock: 10.8.20.0/24
+      AvailabilityZone: !Ref AvailabilityZoneB
+      Tags:
+        - Key: Name
+          Value: lab92-sub-private-p1-az-b
+
+  P1SubnetAttachA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref P1VPC
+      CidrBlock: 10.8.100.0/28
+      AvailabilityZone: !Ref AvailabilityZoneA
+      Tags:
+        - Key: Name
+          Value: lab92-sub-private-p1-attach-az-a
+
+  P1SubnetAttachB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref P1VPC
+      CidrBlock: 10.8.200.0/28
+      AvailabilityZone: !Ref AvailabilityZoneB
+      Tags:
+        - Key: Name
+          Value: lab92-sub-private-p1-attach-az-b
+
+  # P1 Route Tables
+  P1PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref P1VPC
+      Tags:
+        - Key: Name
+          Value: lab92-rt-public-p1
+
+  P1PublicSubnetAssocA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref P1SubnetPublicA
+      RouteTableId: !Ref P1PublicRouteTable
+
+  P1PublicSubnetAssocB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref P1SubnetPublicB
+      RouteTableId: !Ref P1PublicRouteTable
+
+  P1PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref P1VPC
+      Tags:
+        - Key: Name
+          Value: lab92-rt-private-p1
+
+  P1PrivateSubnetAssocA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref P1SubnetPrivateA
+      RouteTableId: !Ref P1PrivateRouteTable
+
+  P1PrivateSubnetAssocB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref P1SubnetPrivateB
+      RouteTableId: !Ref P1PrivateRouteTable
+
+  P1AttachRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref P1VPC
+      Tags:
+        - Key: Name
+          Value: lab92-rt-attach-p1
+
+  P1AttachSubnetAssocA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref P1SubnetAttachA
+      RouteTableId: !Ref P1AttachRouteTable
+
+  P1AttachSubnetAssocB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref P1SubnetAttachB
+      RouteTableId: !Ref P1AttachRouteTable
+
+  P1SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow all RFC1918 internal traffic
+      VpcId: !Ref P1VPC
+      SecurityGroupIngress:
+        - IpProtocol: -1
+          CidrIp: 10.0.0.0/11
+      Tags:
+        - Key: Name
+          Value: lab92-sg-p1
+
+  P1Server:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref LatestAmiId
+      SubnetId: !Ref P1SubnetPrivateA
+      IamInstanceProfile: !Ref SSMInstanceProfile
+      SecurityGroupIds:
+        - !Ref P1SecurityGroup
+      Tags:
+        - Key: Name
+          Value: lab92-ec2-prod
+
+  #############################################################################
+  # 4. DATACENTER SERVICES VPC (lab92-dcs) - 10.0.0.0/16 (Shared Services)
+  #############################################################################
+  DCSVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: lab92-dcs
+
+  DCSIGW:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: lab92-igw-dcs
+
+  DCSIGWAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref DCSVPC
+      InternetGatewayId: !Ref DCSIGW
+
+  DCSSubnetPublicA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref DCSVPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Ref AvailabilityZoneA
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: lab92-sub-public-dcs-az-a
+
+  DCSSubnetPublicB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref DCSVPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Ref AvailabilityZoneB
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: lab92-sub-public-dcs-az-b
+
+  DCSSubnetPrivateA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref DCSVPC
+      CidrBlock: 10.0.10.0/24
+      AvailabilityZone: !Ref AvailabilityZoneA
+      Tags:
+        - Key: Name
+          Value: lab92-sub-private-dcs-az-a
+
+  DCSSubnetPrivateB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref DCSVPC
+      CidrBlock: 10.0.20.0/24
+      AvailabilityZone: !Ref AvailabilityZoneB
+      Tags:
+        - Key: Name
+          Value: lab92-sub-private-dcs-az-b
+
+  DCSSubnetAttachA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref DCSVPC
+      CidrBlock: 10.0.100.0/28
+      AvailabilityZone: !Ref AvailabilityZoneA
+      Tags:
+        - Key: Name
+          Value: lab92-sub-private-dcs-attach-az-a
+
+  DCSSubnetAttachB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref DCSVPC
+      CidrBlock: 10.0.200.0/28
+      AvailabilityZone: !Ref AvailabilityZoneB
+      Tags:
+        - Key: Name
+          Value: lab92-sub-private-dcs-attach-az-b
+
+  # DCS NAT Gateway with Elastic IP
+  DCSEIP:
+    Type: AWS::EC2::EIP
+    DependsOn: DCSIGWAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: lab92-eip-dcs
+
+  DCSNATGW:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt DCSEIP.AllocationId
+      SubnetId: !Ref DCSSubnetPublicA
+      Tags:
+        - Key: Name
+          Value: lab92-nat-sub-public-dcs
+
+  # DCS Route Tables
+  DCSPublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref DCSVPC
+      Tags:
+        - Key: Name
+          Value: lab92-rt-public-dcs
+
+  DCSPublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: DCSIGWAttachment
+    Properties:
+      RouteTableId: !Ref DCSPublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref DCSIGW
+
+  DCSPublicSubnetAssocA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref DCSSubnetPublicA
+      RouteTableId: !Ref DCSPublicRouteTable
+
+  DCSPublicSubnetAssocB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref DCSSubnetPublicB
+      RouteTableId: !Ref DCSPublicRouteTable
+
+  DCSPrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref DCSVPC
+      Tags:
+        - Key: Name
+          Value: lab92-rt-private-dcs
+
+  DCSPrivateDefaultRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref DCSPrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref DCSNATGW
+
+  DCSPrivateSubnetAssocA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref DCSSubnetPrivateA
+      RouteTableId: !Ref DCSPrivateRouteTable
+
+  DCSPrivateSubnetAssocB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref DCSSubnetPrivateB
+      RouteTableId: !Ref DCSPrivateRouteTable
+
+  DCSAttachRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref DCSVPC
+      Tags:
+        - Key: Name
+          Value: lab92-rt-attach-dcs
+
+  DCSAttachSubnetAssocA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref DCSSubnetAttachA
+      RouteTableId: !Ref DCSAttachRouteTable
+
+  DCSAttachSubnetAssocB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref DCSSubnetAttachB
+      RouteTableId: !Ref DCSAttachRouteTable
+
+  DCSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow all RFC1918 internal traffic
+      VpcId: !Ref DCSVPC
+      SecurityGroupIngress:
+        - IpProtocol: -1
+          CidrIp: 10.0.0.0/11
+      Tags:
+        - Key: Name
+          Value: lab92-sg-dcs
+
+  DCSServer:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref LatestAmiId
+      SubnetId: !Ref DCSSubnetPrivateA
+      IamInstanceProfile: !Ref SSMInstanceProfile
+      SecurityGroupIds:
+        - !Ref DCSSecurityGroup
+      Tags:
+        - Key: Name
+          Value: lab92-ec2-dcs
+
+  #############################################################################
+  # 5. DATACENTER VPC (lab92-dc) - 10.4.0.0/16 (Simulated Datacenter)
+  #############################################################################
+  DCVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.4.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: lab92-dc
+
+  DCIGW:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: lab92-igw-dc
+
+  DCIGWAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref DCVPC
+      InternetGatewayId: !Ref DCIGW
+
+  DCSubnetPublicA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref DCVPC
+      CidrBlock: 10.4.1.0/24
+      AvailabilityZone: !Ref AvailabilityZoneA
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: lab92-sub-public-dc-az-a
+
+  DCSubnetPublicB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref DCVPC
+      CidrBlock: 10.4.2.0/24
+      AvailabilityZone: !Ref AvailabilityZoneB
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: lab92-sub-public-dc-az-b
+
+  DCSubnetPrivateA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref DCVPC
+      CidrBlock: 10.4.10.0/24
+      AvailabilityZone: !Ref AvailabilityZoneA
+      Tags:
+        - Key: Name
+          Value: lab92-sub-private-dc-az-a
+
+  DCSubnetPrivateB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref DCVPC
+      CidrBlock: 10.4.20.0/24
+      AvailabilityZone: !Ref AvailabilityZoneB
+      Tags:
+        - Key: Name
+          Value: lab92-sub-private-dc-az-b
+
+  DCSubnetAttachA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref DCVPC
+      CidrBlock: 10.4.100.0/28
+      AvailabilityZone: !Ref AvailabilityZoneA
+      Tags:
+        - Key: Name
+          Value: lab92-sub-private-dc-attach-az-a
+
+  DCSubnetAttachB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref DCVPC
+      CidrBlock: 10.4.200.0/28
+      AvailabilityZone: !Ref AvailabilityZoneB
+      Tags:
+        - Key: Name
+          Value: lab92-sub-private-dc-attach-az-b
+
+  # DC Route Tables
+  DCPublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref DCVPC
+      Tags:
+        - Key: Name
+          Value: lab92-rt-public-dc
+
+  DCPublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: DCIGWAttachment
+    Properties:
+      RouteTableId: !Ref DCPublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref DCIGW
+
+  DCPublicSubnetAssocA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref DCSubnetPublicA
+      RouteTableId: !Ref DCPublicRouteTable
+
+  DCPublicSubnetAssocB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref DCSubnetPublicB
+      RouteTableId: !Ref DCPublicRouteTable
+
+  DCPrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref DCVPC
+      Tags:
+        - Key: Name
+          Value: lab92-rt-private-dc
+
+  DCPrivateSubnetAssocA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref DCSubnetPrivateA
+      RouteTableId: !Ref DCPrivateRouteTable
+
+  DCPrivateSubnetAssocB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref DCSubnetPrivateB
+      RouteTableId: !Ref DCPrivateRouteTable
+
+  DCAttachRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref DCVPC
+      Tags:
+        - Key: Name
+          Value: lab92-rt-attach-dc
+
+  DCAttachSubnetAssocA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref DCSubnetAttachA
+      RouteTableId: !Ref DCAttachRouteTable
+
+  DCAttachSubnetAssocB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref DCSubnetAttachB
+      RouteTableId: !Ref DCAttachRouteTable
+
+  DCSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow all RFC1918 internal traffic
+      VpcId: !Ref DCVPC
+      SecurityGroupIngress:
+        - IpProtocol: -1
+          CidrIp: 10.0.0.0/11
+      Tags:
+        - Key: Name
+          Value: lab92-sg-dc
+
+  DCServer:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref LatestAmiId
+      SubnetId: !Ref DCSubnetPrivateA
+      IamInstanceProfile: !Ref SSMInstanceProfile
+      SecurityGroupIds:
+        - !Ref DCSecurityGroup
+      Tags:
+        - Key: Name
+          Value: lab92-ec2-dc
+
+Outputs:
+  NP1VpcId:
+    Description: Non-Prod 1 (Dev) VPC ID
+    Value: !Ref NP1VPC
+  NP2VpcId:
+    Description: Non-Prod 2 (Test) VPC ID
+    Value: !Ref NP2VPC
+  P1VpcId:
+    Description: Production 1 VPC ID
+    Value: !Ref P1VPC
+  DCSVpcId:
+    Description: Datacenter Services VPC ID
+    Value: !Ref DCSVPC
+  DCVpcId:
+    Description: Datacenter VPC ID
+    Value: !Ref DCVPC
+
+  DCSNatGatewayId:
+    Description: NAT Gateway ID in DCS
+    Value: !Ref DCSNATGW
+
+  NP1ServerId:
+    Description: Dev EC2 Instance ID (NP1)
+    Value: !Ref NP1Server
+  NP2ServerId:
+    Description: Test EC2 Instance ID (NP2)
+    Value: !Ref NP2Server
+  P1ServerId:
+    Description: Prod EC2 Instance ID (P1)
+    Value: !Ref P1Server
+  DCSServerId:
+    Description: DCS EC2 Instance ID
+    Value: !Ref DCSServer
+  DCServerId:
+    Description: DC EC2 Instance ID
+    Value: !Ref DCServer
