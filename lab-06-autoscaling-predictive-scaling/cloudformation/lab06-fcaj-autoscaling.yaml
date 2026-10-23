@@ -1,0 +1,401 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  AWS SAA Lab 06: Trien khai ung dung FCAJ Management voi Auto Scaling Group,
+  Application Load Balancer (ALB), Multi-AZ RDS MySQL, Dynamic Scaling va Predictive Scaling.
+
+Parameters:
+  EnvironmentName:
+    Description: Prefix cho cac tai nguyen trong lab
+    Type: String
+    Default: lab06
+
+  KeyName:
+    Description: EC2 KeyPair de SSH
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: d-key-SAA-common
+
+  DBUsername:
+    Description: Master username cho RDS MySQL
+    Type: String
+    Default: admin
+
+  DBPassword:
+    Description: Master password cho RDS MySQL
+    Type: String
+    NoEcho: true
+    Default: jijika123
+
+  VpcCIDR:
+    Description: Dai CIDR cho VPC
+    Type: String
+    Default: 10.0.0.0/16
+
+Resources:
+  # =========================================================================
+  # 1. NETWORKING (VPC, Subnets, Gateways, Route Tables)
+  # =========================================================================
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCIDR
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-vpc'
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-igw'
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-subnet-public1-${AWS::Region}a'
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-subnet-public2-${AWS::Region}b'
+
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.11.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-subnet-private1-${AWS::Region}a'
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.12.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-subnet-private2-${AWS::Region}b'
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-rtb-public'
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  # =========================================================================
+  # 2. SECURITY GROUPS
+  # =========================================================================
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${EnvironmentName}-alb-sg'
+      GroupDescription: Security Group cho Application Load Balancer
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-alb-sg'
+
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${EnvironmentName}-sg'
+      GroupDescription: Security Group cho EC2 instances va Management Host
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 5000
+          ToPort: 5000
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-sg'
+
+  DatabaseSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${EnvironmentName}-db-sg'
+      GroupDescription: Security Group cho RDS Database Instance
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref InstanceSecurityGroup
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-db-sg'
+
+  # =========================================================================
+  # 3. DATABASE (RDS Multi-AZ MySQL 8.4)
+  # =========================================================================
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupName: !Sub '${EnvironmentName}-sg-db'
+      DBSubnetGroupDescription: Subnet Group cho RDS Multi-AZ Database
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-sg-db'
+
+  DatabaseInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: !Sub '${EnvironmentName}-db-instance'
+      DBName: fcaj
+      Engine: mysql
+      EngineVersion: '8.4.11'
+      DBInstanceClass: db.m5d.large
+      AllocatedStorage: '20'
+      StorageType: gp3
+      MultiAZ: true
+      PubliclyAccessible: false
+      MasterUsername: !Ref DBUsername
+      MasterUserPassword: !Ref DBPassword
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups:
+        - !Ref DatabaseSecurityGroup
+      DeletionProtection: false
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-db-instance'
+
+  # =========================================================================
+  # 4. APPLICATION LOAD BALANCER & TARGET GROUP
+  # =========================================================================
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub '${EnvironmentName}-tg'
+      Port: 5000
+      Protocol: HTTP
+      VpcId: !Ref VPC
+      TargetType: instance
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckPort: '5000'
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+      Matcher:
+        HttpCode: '200'
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-tg'
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub '${EnvironmentName}-alb'
+      Scheme: internet-facing
+      Type: application
+      Subnets:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-alb'
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  # =========================================================================
+  # 5. LAUNCH TEMPLATE & AUTO SCALING GROUP
+  # =========================================================================
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub '${EnvironmentName}-lt'
+      LaunchTemplateData:
+        InstanceType: t3.micro
+        KeyName: !Ref KeyName
+        SecurityGroupIds:
+          - !Ref InstanceSecurityGroup
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            yum update -y
+            yum install -y nodejs git
+            cd /home/ec2-user
+            git clone https://github.com/awslabs/ec2-spot-workshops.git || true
+            npm install -g pm2
+            # Ghi thong tin Database
+            echo "DB_HOST='${DatabaseInstance.Endpoint.Address}'" > /home/ec2-user/.env
+            echo "DB_NAME='fcaj'" >> /home/ec2-user/.env
+            echo "DB_USER='${DBUsername}'" >> /home/ec2-user/.env
+            echo "DB_PASS='${DBPassword}'" >> /home/ec2-user/.env
+
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: !Sub '${EnvironmentName}-acg'
+      VPCZoneIdentifier:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      MinSize: '1'
+      MaxSize: '3'
+      DesiredCapacity: '1'
+      TargetGroupARNs:
+        - !Ref TargetGroup
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 300
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-asg-instance'
+          PropagateAtLaunch: true
+
+  # =========================================================================
+  # 6. SCALING POLICIES (Target Tracking & Predictive Scaling)
+  # =========================================================================
+  TargetTrackingCPUPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      PolicyType: TargetTrackingScaling
+      TargetTrackingConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ASGAverageCPUUtilization
+        TargetValue: 50.0
+
+  PredictiveScalingPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      PolicyType: PredictiveScaling
+      PredictiveScalingConfiguration:
+        Mode: ForecastAndScale
+        SchedulingBufferTime: 60
+        MetricSpecifications:
+          - TargetValue: 50.0
+            CustomizedLoadMetricSpecification:
+              MetricDataQueries:
+                - Id: cpu_sum
+                  MetricStat:
+                    Metric:
+                      Namespace: FCAJ Custom Metrics
+                      MetricName: WSCustomCPUUTILIZATION
+                      Dimensions:
+                        - Name: AutoScalingGroupName
+                          Value: FCAJ-ASG
+                    Stat: Sum
+                  Label: Total CPU Utilization in ASG
+                  ReturnData: true
+            CustomizedScalingMetricSpecification:
+              MetricDataQueries:
+                - Id: cpu_avg
+                  MetricStat:
+                    Metric:
+                      Namespace: FCAJ Custom Metrics
+                      MetricName: WSCustomCPUUTILIZATION
+                      Dimensions:
+                        - Name: AutoScalingGroupName
+                          Value: FCAJ-ASG
+                    Stat: Average
+                  Label: Average CPU Utilization in ASG
+                  ReturnData: true
+            CustomizedCapacityMetricSpecification:
+              MetricDataQueries:
+                - Id: capacity_avg
+                  MetricStat:
+                    Metric:
+                      Namespace: FCAJ Custom Metrics
+                      MetricName: WSCustomGroupInstances
+                      Dimensions:
+                        - Name: AutoScalingGroupName
+                          Value: FCAJ-ASG
+                    Stat: Average
+                  Label: Number of instances in ASG
+                  ReturnData: true
+
+Outputs:
+  LoadBalancerURL:
+    Description: URL truy cap ung dung qua ALB
+    Value: !Sub 'http://${LoadBalancer.DNSName}'
+
+  DatabaseEndpoint:
+    Description: Dia chi Endpoint ket noi RDS MySQL
+    Value: !GetAtt DatabaseInstance.Endpoint.Address
+
+  AutoScalingGroupName:
+    Description: Ten cua Auto Scaling Group
+    Value: !Ref AutoScalingGroup
