@@ -921,6 +921,150 @@ Resources:
         - Key: Name
           Value: lab92-ec2-dc
 
+
+  DCSAttachDefaultRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref DCSAttachRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref DCSNATGW
+
+
+  #############################################################################
+  # 6. TRANSIT GATEWAY & CENTRALIZED EGRESS ROUTING (FOR SESSION MANAGER)
+  #############################################################################
+  TransitGateway:
+    Type: AWS::EC2::TransitGateway
+    Properties:
+      Description: Transit Gateway for Lab 92 centralized egress and Session Manager
+      AmazonSideAsn: 64512
+      AutoAcceptSharedAttachments: enable
+      DefaultRouteTableAssociation: enable
+      DefaultRouteTablePropagation: enable
+      DnsSupport: enable
+      VpnEcmpSupport: enable
+      Tags:
+        - Key: Name
+          Value: lab92-tgw
+
+  TGWAttachmentDCS:
+    Type: AWS::EC2::TransitGatewayAttachment
+    Properties:
+      TransitGatewayId: !Ref TransitGateway
+      VpcId: !Ref DCSVPC
+      SubnetIds:
+        - !Ref DCSSubnetAttachA
+        - !Ref DCSSubnetAttachB
+      Tags:
+        - Key: Name
+          Value: lab92-tgw-attach-dcs
+
+  TGWAttachmentNP1:
+    Type: AWS::EC2::TransitGatewayAttachment
+    Properties:
+      TransitGatewayId: !Ref TransitGateway
+      VpcId: !Ref NP1VPC
+      SubnetIds:
+        - !Ref NP1SubnetAttachA
+        - !Ref NP1SubnetAttachB
+      Tags:
+        - Key: Name
+          Value: lab92-tgw-attach-np1
+
+  TGWAttachmentNP2:
+    Type: AWS::EC2::TransitGatewayAttachment
+    Properties:
+      TransitGatewayId: !Ref TransitGateway
+      VpcId: !Ref NP2VPC
+      SubnetIds:
+        - !Ref NP2SubnetAttachA
+        - !Ref NP2SubnetAttachB
+      Tags:
+        - Key: Name
+          Value: lab92-tgw-attach-np2
+
+  TGWAttachmentP1:
+    Type: AWS::EC2::TransitGatewayAttachment
+    Properties:
+      TransitGatewayId: !Ref TransitGateway
+      VpcId: !Ref P1VPC
+      SubnetIds:
+        - !Ref P1SubnetAttachA
+        - !Ref P1SubnetAttachB
+      Tags:
+        - Key: Name
+          Value: lab92-tgw-attach-p1
+
+  TGWAttachmentDC:
+    Type: AWS::EC2::TransitGatewayAttachment
+    Properties:
+      TransitGatewayId: !Ref TransitGateway
+      VpcId: !Ref DCVPC
+      SubnetIds:
+        - !Ref DCSubnetAttachA
+        - !Ref DCSubnetAttachB
+      Tags:
+        - Key: Name
+          Value: lab92-tgw-attach-dc
+
+  TGWDefaultRouteToDCS:
+    Type: AWS::EC2::TransitGatewayRoute
+    DependsOn: TGWAttachmentDCS
+    Properties:
+      TransitGatewayRouteTableId: !GetAtt TransitGateway.Options.AssociationDefaultRouteTableId
+      DestinationCidrBlock: 0.0.0.0/0
+      TransitGatewayAttachmentId: !Ref TGWAttachmentDCS
+
+  # Spoke VPCs Outbound Route to TGW
+  NP1PrivateRouteToTGW:
+    Type: AWS::EC2::Route
+    DependsOn: TGWAttachmentNP1
+    Properties:
+      RouteTableId: !Ref NP1PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      TransitGatewayId: !Ref TransitGateway
+
+  NP2PrivateRouteToTGW:
+    Type: AWS::EC2::Route
+    DependsOn: TGWAttachmentNP2
+    Properties:
+      RouteTableId: !Ref NP2PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      TransitGatewayId: !Ref TransitGateway
+
+  P1PrivateRouteToTGW:
+    Type: AWS::EC2::Route
+    DependsOn: TGWAttachmentP1
+    Properties:
+      RouteTableId: !Ref P1PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      TransitGatewayId: !Ref TransitGateway
+
+  DCPrivateRouteToTGW:
+    Type: AWS::EC2::Route
+    DependsOn: TGWAttachmentDC
+    Properties:
+      RouteTableId: !Ref DCPrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      TransitGatewayId: !Ref TransitGateway
+
+  # DCS Return Routes back to Spoke VPCs via TGW
+  DCSPublicReturnRouteToTGW:
+    Type: AWS::EC2::Route
+    DependsOn: TGWAttachmentDCS
+    Properties:
+      RouteTableId: !Ref DCSPublicRouteTable
+      DestinationCidrBlock: 10.0.0.0/11
+      TransitGatewayId: !Ref TransitGateway
+
+  DCSPrivateReturnRouteToTGW:
+    Type: AWS::EC2::Route
+    DependsOn: TGWAttachmentDCS
+    Properties:
+      RouteTableId: !Ref DCSPrivateRouteTable
+      DestinationCidrBlock: 10.0.0.0/11
+      TransitGatewayId: !Ref TransitGateway
+
 Outputs:
   NP1VpcId:
     Description: Non-Prod 1 (Dev) VPC ID
